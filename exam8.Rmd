@@ -1,0 +1,182 @@
+---
+title: "exam3"
+author: "Will Schrepferman"
+date: "4/18/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, include = FALSE)
+library(tidyverse)
+library(dplyr)
+library(janitor)
+library(ggplot2)
+library(gt)
+library(broom)
+```
+
+## Question 1
+
+1A) I predict that the correlation coefficient between remittance and outflows and the number of migrants in a given country will be positive; as there are more migrants in a country, more money will be made and sent home in the form of remittances. However, I predict that the relationship will be relatively weak, as there is likely significant variety amongst different immigrant groups and how much money they send in remittances. In order to alleviate this, I would want to control for a country's standard of living and average wage. 
+
+
+1B) 
+```{r read_data}
+migrant_data <- read_csv("raw-data/number_migrants.csv") %>%
+  
+  # had to go to documentation to find start_with function
+  
+  pivot_longer(cols = starts_with("migrants_"), names_to = "year", values_to = "migrants", names_prefix = "migrants_") %>%
+  mutate(year = as.double(year))
+
+
+remittance_data <- read_csv("raw-data/remittances.csv") %>%
+  
+  # needed to turn 'country' lowercase
+  
+  clean_names() %>%
+  pivot_longer(-country, names_to = "year", values_to = "remittances", names_prefix = "remittances_") %>%
+  mutate(year = as.double(year))
+
+comb_data <- migrant_data %>%
+  inner_join(remittance_data, by = c("country", "year")) %>%
+  
+  # filter out data we don't want
+  
+  filter(!is.na(remittances)) %>%
+  filter(!is.na(migrants)) %>%
+  filter(!migrants == 0) %>%
+  filter(!remittances == 0)
+```
+ 
+ 
+```{r plot_1b_no_log, include = TRUE}
+comb_data %>%
+  ggplot(aes(x = migrants, y = remittances, color = as.factor(year))) +
+  geom_point() +
+  labs(title = "Migration versus Remittances",
+            x= "Number of Migrants",
+            y = "Remittance Outflows",
+            color = "Year")
+```
+
+```{r plot_1b_log, include = TRUE}
+
+# add log columns rather than replace other data
+
+comb_data <- comb_data %>%
+  mutate(log_migrants = log(migrants), log_remittances = log(remittances))
+
+
+comb_data %>%
+  ggplot(aes(x = log_migrants, y = log_remittances, color = as.factor(year))) +
+  geom_point() +
+  labs(title = "Migration versus Remittances (log scale)",
+            x= "Number of Migrants (log)",
+            y = "Remittance Outflows (log)",
+            color = "Year")
+```
+
+1C) 
+```{r 1c, include = TRUE}
+comb_data %>%
+  group_by(year) %>%
+  summarize(correlation = cor(log_migrants, log_remittances)) %>%
+  gt() %>%
+  cols_label(year = "Year", correlation = "Correlation Coeffecient") %>%
+  tab_header("Correlation Coeffecient per Year")
+```
+
+For 2015, my hypothesis was mostly correct. The value of 0.725 is positive, as I predicted; it seems that a higher number of migrants is postively associated with an increase in remittances. However, I predicted that the correlation would be relatively weak, and a value of 0.725 is moderate to strong, implying more of a correlation than I anticipated.
+
+## Question 2
+
+```{r 2a, include = TRUE}
+
+# make a model that I'll use in later questions
+
+model <- comb_data %>%
+  lm(formula = log_remittances ~ log_migrants)
+
+# make a tidy version
+
+model_tidy <- comb_data %>%
+  lm(formula = log_remittances ~ log_migrants) %>%
+  tidy(conf.int = TRUE)
+
+model_tidy %>%
+  select(term, estimate, conf.low, conf.high) %>%
+  gt() %>%
+  tab_header(title = "Effect of Number of Migrants on Amount of Remittances",
+             subtitle = "Both IV and DV are logged") %>%
+  cols_label(term = "Variable", estimate = "Estimate", conf.low = "Lower Bound", conf.high = "Upper Bound")
+
+```
+
+
+
+2B) 
+Bayesian: The true value for the average treatment effect is somewhere between an estimated percent change of 0.77% and 0.90% in remittances for a percent change in migrants 
+Frequentist: If an infinite number of regressions were run, the interval (0.77, .9) would contain the true interval 95% of the time for the percent change in remittances for a percent change in migrants.
+
+2C) In the echoed code, see predicted_log_remittances_formula for the equation and precicted_log_remittances_function for the use of augment
+```{r 2c, echo = TRUE, include = TRUE}
+
+# formula can be seen if I echo the code
+
+predicted_log_remittances_formula <- (-5.634995) + (0.835537*17.69)
+
+newdata <- tibble(log_migrants = 17.69)
+
+predicted_log_remittances_function <- predict(model, newdata = newdata, interval = "prediction", se.fit = FALSE)
+
+predicted_log_remittances_formula
+predicted_log_remittances_function
+```
+
+## Question 3
+
+3A) 
+```{r 3a, include = TRUE}
+comb_data %>%
+  lm(formula = log_remittances ~ log_migrants * continent) %>%
+  tidy(conf.int = TRUE) %>%
+  select(term, estimate, conf.low, conf.high) %>%
+  gt() %>%
+  tab_header(title = "Effect of Number of Migrants on Amount of Remittances", subtitle = "Both IV and DV are logged") %>%
+  cols_label(term = "Variable", estimate = "Estimate", conf.low = "Lower bound", conf.high = "Upper Bound")
+```
+
+
+3B) The coefficient  for log_migrants means that for a one percent increase in migrants, there is a predicted 0.62 percent increase in remittances. The coeffecient of continentAmericas is the offset in intercept for data from America relative to other continents (the intercept for America is equal to the normal intercept -3.98 plus -2.45). log_migrants:continentAmericas is the offset in predicted-line slope for migrants in the Americas (so 0.615 plus 0.29).
+
+## Question 4
+```{r q4, include = TRUE}
+data_q4 <- comb_data %>%
+  group_by(year) %>%
+  nest() %>%
+  mutate(mod = map(data, ~ lm(data = ., formula = log_remittances ~ log_migrants))) %>%
+  mutate(reg_results = map(mod, ~ tidy(.))) %>%
+  mutate(coef = map_dbl(reg_results, ~  .$estimate[2])) %>%
+  mutate(se = map_dbl(reg_results, ~ .$std.error[2])) %>%
+  
+  # got 1.96*SE as formula for 95% conf. interval from textbook
+  
+  mutate(upper = coef + (1.96*se)) %>%
+  mutate(lower = coef - (1.96*se)) %>%
+  select(year, coef, lower, upper) %>%
+  
+  # I found that I had to ungroup for gt to work properly
+  
+  ungroup() %>%
+  arrange(year)
+
+data_q4 %>%
+  gt() %>%
+  tab_header(title = "Regression Coefficients Per Year") %>%
+  cols_label(year = "Year", coef = "Coefficient", lower = "Lower", upper = "Upper")
+```
+
+
+
+
